@@ -1,0 +1,75 @@
+# Build an unsigned BitChord IPA for sideloading.
+#
+# The Apple app already exists in this repo (AppleApp/, XcodeGen project.yml,
+# v1.0.4 build 13). This workflow builds the two frameworks the app links
+# (Kotlin shared + Rust native core), generates the Xcode project, and runs
+# the repo's own scripts/package-ios-ipa.sh, which archives with signing
+# disabled and verifies the IPA is unsigned with no provisioning profile.
+#
+# No app code is changed here. The generated Xcode project and frameworks
+# are build outputs and are gitignored.
+name: iOS unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/ios-unsigned-ipa.yml
+
+jobs:
+  build:
+    name: Build BitChord (unsigned IPA)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 16
+        run: |
+          ls /Applications | grep -i xcode || true
+          xcodebuild -version
+          XCODE="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -n 1)"
+          if [ -n "$XCODE" ]; then
+            echo "Selecting $XCODE"
+            sudo xcode-select -s "$XCODE"
+          fi
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install XcodeGen and CMake
+        run: brew install xcodegen cmake
+
+      - name: Add Rust Apple targets
+        run: rustup target add aarch64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim
+
+      - name: Build shared framework (release)
+        run: CONFIG=release ./scripts/build-shared-framework.sh
+
+      - name: Build native core framework
+        run: ./scripts/build-native-core.sh
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec AppleApp/project.yml
+
+      - name: List project targets
+        run: xcodebuild -list -project AppleApp/BitChord.xcodeproj
+
+      - name: Package unsigned IPA
+        run: ./scripts/package-ios-ipa.sh 1.0.4 --output-dir build/release
+
+      - name: List IPA
+        run: ls -lh build/release/
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitchord-unsigned-ipa
+          path: build/release/*.ipa
+          retention-days: 30
