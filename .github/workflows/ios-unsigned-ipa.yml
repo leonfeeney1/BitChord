@@ -25,11 +25,18 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16
+      - name: Select Xcode 26
         run: |
           ls /Applications | grep -i xcode || true
-          xcodebuild -version
-          XCODE="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -n 1)"
+          # The app weak-links MusicUnderstanding (iOS 26 SDK, project.yml:
+          # `-weak_framework MusicUnderstanding` + the MusicUnderstanding
+          # SDK dependency), so Xcode 16 cannot link it — Xcode 26 is
+          # required. macos-15 ships 26.0.1-26.3 alongside 16.4.
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)"
+          if [ -z "$XCODE" ]; then
+            echo "No Xcode 26 found; falling back to newest Xcode 16"
+            XCODE="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -n 1)"
+          fi
           if [ -n "$XCODE" ]; then
             echo "Selecting $XCODE"
             sudo xcode-select -s "$XCODE"
@@ -62,7 +69,31 @@ jobs:
         run: xcodebuild -list -project AppleApp/BitChord.xcodeproj
 
       - name: Package unsigned IPA
-        run: ./scripts/package-ios-ipa.sh 1.0.4 --output-dir build/release
+        run: |
+          mkdir -p build/release
+          set -o pipefail
+          ./scripts/package-ios-ipa.sh 1.0.4 --output-dir build/release 2>&1 | tee build/release/package.log
+
+      - name: Show package log tail on failure
+        if: failure()
+        run: |
+          echo '## Package log (last 150 lines)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f build/release/package.log ]; then
+            tail -n 150 build/release/package.log >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '(no package.log was produced)' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload package log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-log
+          path: build/release/package.log
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: List IPA
         run: ls -lh build/release/
